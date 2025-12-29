@@ -2,7 +2,7 @@
 
 Builds NixOS qcow2 images for libvirt VMs using nixos-generators.
 
-Creates pre-configured NixOS desktop images ready to boot in libvirt. Currently all variants are the SAME desktop preset though I have plans to configure each one soon™
+Creates pre-configured NixOS desktop images ready to boot in libvirt.
 
 ## Requirements
 

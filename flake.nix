@@ -5,12 +5,22 @@
       url = "github:nix-community/nixos-generators";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    nur = {
+      url = "github:nix-community/NUR";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = {
     self,
     nixpkgs,
     nixos-generators,
+    home-manager,
+    nur,
   }: let
     system = "x86_64-linux";
     pkgs = nixpkgs.legacyPackages.${system};
@@ -19,7 +29,22 @@
       nixos-generators.nixosGenerate {
         inherit system;
         format = "qcow";
-        modules = [config];
+        modules = [
+          config
+          home-manager.nixosModules.home-manager
+          {
+            nixpkgs.overlays = [
+              (final: prev: {
+                nur = import nur {
+                  pkgs = final;
+                  nurpkgs = final;
+                };
+              })
+            ];
+            home-manager.useGlobalPkgs = true;
+            home-manager.useUserPackages = true;
+          }
+        ];
       };
 
     # Deploy script that copies the built image
@@ -27,15 +52,14 @@
       pkgs.writeShellScript "deploy-${name}" ''
         set -e
         echo "Building ${name} image..."
-        ${pkgs.nix}/bin/nix build .#${name}
-
+        rm -f result  # Clear any existing result symlinks
+        ${pkgs.nix}/bin/nix build .#${name} --out-link result
         DEST="/var/lib/libvirt/images/ISOs/nixos_${name}.qcow2"
-
         echo "Copying to $DEST..."
-        sudo cp -f result/nixos.qcow2 "$DEST"
+        sudo rsync --inplace result/nixos.qcow2 "$DEST"
+        #sudo cp -f result/nixos.qcow2 "$DEST" # Might be faster lets see
         sudo chown root:root "$DEST"
         sudo chmod 644 "$DEST"
-
         echo "✓ ${name} deployed"
       '';
   in {
@@ -65,18 +89,20 @@
         program = toString (pkgs.writeShellScript "deploy-all" ''
           set -e
           echo "Building all images..."
-          ${pkgs.nix}/bin/nix build .#server .#desktop .#osint
+          # HACK: Explicit out-links because parallel builds don't guarantee result-N order
+          ${pkgs.nix}/bin/nix build .#server --out-link result-server
+          ${pkgs.nix}/bin/nix build .#desktop --out-link result-desktop
+          ${pkgs.nix}/bin/nix build .#osint --out-link result-osint
 
           echo "Checking hashes..."
           for NAME in server desktop osint; do
-            IDX=1
-            case $NAME in
-                server) IDX=1 ;;
-                desktop) IDX=2 ;;
-                osint) IDX=3 ;;
-            esac
-            SRC="result-$i/nixos.qcow2"
+            SRC="result-$NAME/nixos.qcow2"
             DEST="/var/lib/libvirt/images/ISOs/nixos_$NAME.qcow2"
+
+            if [ ! -f "$SRC" ]; then
+              echo "✗ $NAME build failed, skipping"
+              continue
+            fi
 
             SRC_HASH=$(${pkgs.b3sum}/bin/b3sum "$SRC" | cut -d' ' -f1)
             if [ -f "$DEST" ]; then
@@ -86,7 +112,6 @@
                 continue
               fi
             fi
-
             echo "Copying $NAME..."
             sudo cp -f "$SRC" "$DEST"
             sudo chown root:root "$DEST"
